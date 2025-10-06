@@ -86,20 +86,27 @@ echo ""
 # ---------- SECURITY ----------
 echo "🔒 Checking security tools..."
 
-# Gitleaks
-if command -v gitleaks &> /dev/null; then
+# Gitleaks - check local binary first, then system
+GITLEAKS_CMD=""
+if [[ -x "./scripts/gitleaks" ]]; then
+    GITLEAKS_CMD="./scripts/gitleaks"
+    check_pass "gitleaks (local binary)"
+elif command -v gitleaks &> /dev/null; then
+    GITLEAKS_CMD="gitleaks"
     check_pass "gitleaks $(gitleaks version | head -n1)"
-    
+else
+    check_fail "gitleaks not installed (required by pre-commit hooks)"
+    echo "   Fix: ./scripts/fix-critical-issues.sh"
+    echo "   Or: brew install gitleaks"
+fi
+
+if [[ -n "$GITLEAKS_CMD" ]]; then
     echo "   Running gitleaks scan..."
-    if gitleaks detect --source . --verbose --no-git 2>&1 | grep -q "No leaks found"; then
+    if $GITLEAKS_CMD detect --source . --verbose --no-git 2>&1 | grep -q "No leaks found"; then
         check_pass "No secrets detected"
     else
         check_fail "Secrets detected in codebase!"
     fi
-else
-    check_fail "gitleaks not installed (required by pre-commit hooks)"
-    echo "   Fix: brew install gitleaks"
-    echo "   Or: wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz"
 fi
 
 # Check for .env files

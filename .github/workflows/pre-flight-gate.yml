@@ -69,16 +69,23 @@ jobs:
       # ---------- SECURITY ----------
       - name: "GITLEAKS – installed & repository scan"
         run: |
-          if ! command -v gitleaks &> /dev/null; then
+          # Check for local gitleaks binary first (from fix-critical-issues.sh)
+          if [[ -x "./scripts/gitleaks" ]]; then
+            GITLEAKS_CMD="./scripts/gitleaks"
+            echo "✅ gitleaks (local binary)"
+          elif command -v gitleaks &> /dev/null; then
+            GITLEAKS_CMD="gitleaks"
+            echo "✅ gitleaks $(gitleaks version)"
+          else
             echo "❌ gitleaks not installed"
-            echo "   Fix (Linux): wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz && tar -xzf gitleaks_8.18.0_linux_x64.tar.gz && sudo mv gitleaks /usr/local/bin/"
-            echo "   Fix (macOS): brew install gitleaks"
+            echo "   Fix: ./scripts/fix-critical-issues.sh"
+            echo "   Or (Linux): wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz && tar -xzf gitleaks_8.18.0_linux_x64.tar.gz && sudo mv gitleaks /usr/local/bin/"
+            echo "   Or (macOS): brew install gitleaks"
             exit 1
           fi
-          echo "✅ gitleaks $(gitleaks version)"
           
           echo "Running gitleaks scan..."
-          gitleaks detect --source . --verbose --no-git || {
+          $GITLEAKS_CMD detect --source . --verbose --no-git || {
             echo "❌ Secrets detected in codebase!"
             exit 1
           }

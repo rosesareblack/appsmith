@@ -37,7 +37,22 @@ This repository now has a **hard gate** that enforces every critical pre-flight 
 
 ## Quick Start
 
-### 1️⃣ Run Local Check (Before Pushing)
+### 0️⃣ **One-Command Fix** (First Time Setup)
+
+If this is your first time or you need to fix critical issues:
+
+```bash
+./scripts/fix-critical-issues.sh
+```
+
+This automatically fixes:
+- ✅ Node.js version (to v20.11.1)
+- ✅ Java version (to 17)
+- ✅ gitleaks installation
+
+**See [ONE_COMMAND_FIX.md](ONE_COMMAND_FIX.md) for details.**
+
+### 1️⃣ Run Local Check (Before Every Push)
 
 ```bash
 # Make executable (first time only)
@@ -45,6 +60,9 @@ chmod +x scripts/pre-flight-check.sh
 
 # Run the check
 ./scripts/pre-flight-check.sh
+
+# Or via yarn
+cd app/client && yarn pre-flight
 ```
 
 **Expected Output:**
@@ -208,38 +226,30 @@ grep "target" .gitignore
 
 ## One-Command Fix (Fresh Setup)
 
-If this is a fresh clone or you need to reset everything:
+**NEW:** We have an automated script that fixes everything!
 
 ```bash
-#!/bin/bash
-set -e
+# Fix all 3 critical issues automatically
+./scripts/fix-critical-issues.sh
 
-echo "🔧 Fixing all pre-flight issues..."
-
-# 1. Fix Node version
-nvm install v20.11.1
-nvm use v20.11.1
-
-# 2. Install gitleaks (Linux)
-if ! command -v gitleaks &> /dev/null; then
-    wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz
-    tar -xzf gitleaks_8.18.0_linux_x64.tar.gz
-    sudo mv gitleaks /usr/local/bin/
-    rm gitleaks_8.18.0_linux_x64.tar.gz
-fi
-
-# 3. Install client dependencies
+# Then install dependencies
 cd app/client
 corepack enable
 yarn install --immutable
 yarn init-husky
 cd ../..
 
-# 4. Run pre-flight check
+# Verify everything is good
 ./scripts/pre-flight-check.sh
-
-echo "✅ All issues fixed!"
 ```
+
+**Or use the yarn shortcut:**
+
+```bash
+cd app/client && yarn fix:critical
+```
+
+See **[ONE_COMMAND_FIX.md](ONE_COMMAND_FIX.md)** for complete details.
 
 ## Enable Required Status Check (Repo Admin)
 

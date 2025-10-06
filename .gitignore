@@ -49,3 +49,6 @@ TASKS.md
 # Java build artifacts
 **/target/
 app/server/**/target/
+
+# Local gitleaks binary (downloaded by fix-critical-issues.sh)
+scripts/gitleaks
