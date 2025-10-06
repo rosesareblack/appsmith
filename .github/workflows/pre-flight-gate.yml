@@ -1,0 +1,276 @@
+name: pre-flight-gate
+
+on:
+  pull_request:
+  push:
+    branches: [master, release]  # Appsmith uses 'master' not 'main'
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # Need full history for lock-file diff
+
+      # ---------- LANGUAGE VERSION PINS ----------
+      - name: "NODE – exact version match"
+        run: |
+          NODE_EXPECTED=$(cat app/client/.nvmrc)
+          NODE_ACTUAL="v$(node -v | cut -d'v' -f2)"
+          if [[ "$NODE_ACTUAL" != "$NODE_EXPECTED" ]]; then
+            echo "❌ Node version mismatch"
+            echo "   Expected: $NODE_EXPECTED (from app/client/.nvmrc)"
+            echo "   Actual:   $NODE_ACTUAL"
+            echo "   Fix: nvm install $NODE_EXPECTED && nvm use $NODE_EXPECTED"
+            exit 1
+          fi
+          echo "✅ Node $NODE_ACTUAL matches .nvmrc"
+
+      - name: "JAVA – version from pom.xml"
+        run: |
+          JAVA_EXPECTED=$(grep -oP '<java\.version>\K[^<]+' app/server/pom.xml | head -1)
+          JAVA_ACTUAL=$(java -version 2>&1 | head -n1 | grep -oP '\d+\.\d+' | head -1)
+          if [[ "$JAVA_ACTUAL" != "$JAVA_EXPECTED" ]]; then
+            echo "❌ Java version mismatch"
+            echo "   Expected: $JAVA_EXPECTED (from app/server/pom.xml)"
+            echo "   Actual:   $JAVA_ACTUAL"
+            echo "   Fix: sdk install java $JAVA_EXPECTED-tem"
+            exit 1
+          fi
+          echo "✅ Java $JAVA_ACTUAL matches pom.xml"
+
+      - name: "YARN – must be v3 Berry"
+        working-directory: app/client
+        run: |
+          corepack enable
+          YARN_ACTUAL=$(yarn --version)
+          YARN_EXPECTED=$(grep -oP 'yarn@\K[^"]+' package.json)
+          if [[ ! "$YARN_ACTUAL" =~ ^3\. ]]; then
+            echo "❌ Yarn version mismatch"
+            echo "   Expected: v3.x (Berry) - specifically $YARN_EXPECTED"
+            echo "   Actual:   $YARN_ACTUAL"
+            echo "   Fix: corepack enable"
+            exit 1
+          fi
+          echo "✅ Yarn $YARN_ACTUAL (Berry)"
+
+      - name: "MAVEN – installed"
+        run: |
+          if ! command -v mvn &> /dev/null; then
+            echo "❌ Maven not found"
+            echo "   Fix: sudo apt-get install maven"
+            exit 1
+          fi
+          MVN_VERSION=$(mvn -v | head -n1)
+          echo "✅ $MVN_VERSION"
+
+      # ---------- SECURITY ----------
+      - name: "GITLEAKS – installed & repository scan"
+        run: |
+          if ! command -v gitleaks &> /dev/null; then
+            echo "❌ gitleaks not installed"
+            echo "   Fix (Linux): wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.0/gitleaks_8.18.0_linux_x64.tar.gz && tar -xzf gitleaks_8.18.0_linux_x64.tar.gz && sudo mv gitleaks /usr/local/bin/"
+            echo "   Fix (macOS): brew install gitleaks"
+            exit 1
+          fi
+          echo "✅ gitleaks $(gitleaks version)"
+          
+          echo "Running gitleaks scan..."
+          gitleaks detect --source . --verbose --no-git || {
+            echo "❌ Secrets detected in codebase!"
+            exit 1
+          }
+          echo "✅ No secrets detected"
+
+      - name: "SECRETS – .env not committed"
+        run: |
+          if git ls-files | grep -E '^\.env$|/\.env$' | grep -v '\.env\.example'; then
+            echo "❌ .env file is committed!"
+            echo "   .env files should never be in git"
+            exit 1
+          fi
+          echo "✅ No .env files committed"
+
+      # ---------- CLIENT DEPENDENCIES ----------
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: app/client/.nvmrc
+          cache: 'yarn'
+          cache-dependency-path: app/client/yarn.lock
+
+      - name: "CLIENT – enable corepack"
+        working-directory: app/client
+        run: corepack enable
+
+      - name: "CLIENT – install dependencies (immutable)"
+        working-directory: app/client
+        run: |
+          yarn install --immutable --immutable-cache --check-cache || {
+            echo "❌ Dependencies cannot be installed or yarn.lock is out of sync"
+            echo "   Fix: yarn install"
+            exit 1
+          }
+          echo "✅ Dependencies installed (frozen lockfile)"
+
+      - name: "CLIENT – check for unused dependencies"
+        working-directory: app/client
+        run: |
+          # Install depcheck
+          npx depcheck \
+            --ignores="@types/*,@testing-library/*,eslint*,prettier,husky,lint-staged,cypress,jest,ts-jest,@babel/*,babel-*" \
+            --skip-missing \
+            | tee depcheck.txt
+          
+          if grep -q "Unused dependencies" depcheck.txt; then
+            echo "❌ Unused dependencies found"
+            echo "   Review depcheck.txt above and remove unused packages"
+            exit 1
+          fi
+          echo "✅ No unused dependencies"
+
+      - name: "CLIENT – check for duplicate dependencies"
+        working-directory: app/client
+        run: |
+          yarn dedupe --check || {
+            echo "❌ Duplicate dependencies found in yarn.lock"
+            echo "   Fix: yarn dedupe"
+            exit 1
+          }
+          echo "✅ No duplicate dependencies"
+
+      # ---------- SERVER DEPENDENCIES ----------
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version-file: app/server/pom.xml
+          cache: 'maven'
+
+      - name: "SERVER – dependency analysis"
+        working-directory: app/server
+        run: |
+          mvn -B dependency:analyze -DignoreNonCompile=true -DfailOnWarning=false | tee mvn-analyze.txt
+          
+          # Check for unused declared dependencies
+          if grep -q "Unused declared dependencies found" mvn-analyze.txt; then
+            echo "⚠️ Unused Maven dependencies found"
+            grep -A 20 "Unused declared dependencies" mvn-analyze.txt || true
+            # Don't fail yet - just warn
+            echo "   Consider removing unused dependencies"
+          else
+            echo "✅ No unused Maven dependencies"
+          fi
+
+      - name: "SERVER – check for dependency updates"
+        working-directory: app/server
+        run: |
+          mvn -B versions:display-dependency-updates -DprocessDependencyManagement=false | tee mvn-updates.txt
+          echo "📊 Dependency update report generated"
+          # Don't fail on updates available - just inform
+
+      # ---------- LOCK FILES & BUILD ARTIFACTS ----------
+      - name: "GITIGNORE – node_modules is excluded"
+        run: |
+          if ! grep -q "node_modules" .gitignore; then
+            echo "❌ node_modules not in .gitignore"
+            exit 1
+          fi
+          echo "✅ node_modules in .gitignore"
+
+      - name: "GITIGNORE – Java target/ is excluded"
+        run: |
+          if ! grep -q "target" .gitignore; then
+            echo "❌ Java target/ directories not in .gitignore"
+            echo "   Fix: echo '**/target/' >> .gitignore"
+            exit 1
+          fi
+          echo "✅ target/ in .gitignore"
+
+      - name: "LOCK FILES – no uncommitted changes"
+        run: |
+          git diff --exit-code app/client/yarn.lock || {
+            echo "❌ app/client/yarn.lock has uncommitted changes"
+            echo "   This suggests dependencies were modified but not committed"
+            exit 1
+          }
+          
+          git diff --exit-code app/server/pom.xml || {
+            echo "❌ app/server/pom.xml has uncommitted changes"
+            echo "   Commit your pom.xml changes"
+            exit 1
+          }
+          
+          echo "✅ All lock files are clean"
+
+      # ---------- EDITOR CONFIG ----------
+      - name: "EDITORCONFIG – exists"
+        run: |
+          if [ ! -f .editorconfig ]; then
+            echo "❌ .editorconfig not found"
+            exit 1
+          fi
+          echo "✅ .editorconfig present"
+
+      - name: "ENV EXAMPLE – exists"
+        run: |
+          if [ ! -f .env.example ]; then
+            echo "❌ .env.example not found"
+            exit 1
+          fi
+          echo "✅ .env.example present"
+
+      # ---------- HUSKY PRE-COMMIT ----------
+      - name: "PRE-COMMIT HOOKS – Husky configured"
+        run: |
+          if [ ! -f app/client/.husky/pre-commit ]; then
+            echo "❌ Husky pre-commit hook not found"
+            exit 1
+          fi
+          
+          # Check that pre-commit hook includes gitleaks
+          if ! grep -q "gitleaks" app/client/.lintstagedrc.json; then
+            echo "❌ gitleaks not configured in lint-staged"
+            exit 1
+          fi
+          
+          echo "✅ Pre-commit hooks configured with gitleaks"
+
+      # ---------- TYPESCRIPT STRICT MODE ----------
+      - name: "TYPESCRIPT – strict mode enabled"
+        run: |
+          if ! grep -q '"strict":\s*true' app/client/tsconfig.json; then
+            echo "❌ TypeScript strict mode not enabled"
+            echo "   Fix: Set 'strict: true' in tsconfig.json"
+            exit 1
+          fi
+          echo "✅ TypeScript strict mode enabled"
+
+      # ---------- CI CONFIGURATION ----------
+      - name: "CI/CD – GitHub Actions workflows exist"
+        run: |
+          WORKFLOW_COUNT=$(find .github/workflows -name "*.yml" -o -name "*.yaml" | wc -l)
+          if [ "$WORKFLOW_COUNT" -lt 5 ]; then
+            echo "❌ Insufficient CI/CD workflows found (found: $WORKFLOW_COUNT)"
+            exit 1
+          fi
+          echo "✅ $WORKFLOW_COUNT CI/CD workflows configured"
+
+      # ---------- READY TO COMMIT ----------
+      - name: "✅ PRE-FLIGHT GATE PASSED"
+        run: |
+          echo ""
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "🚀 ALL PRE-FLIGHT CHECKS PASSED"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo ""
+          echo "✅ Runtime versions match"
+          echo "✅ No secrets in codebase"
+          echo "✅ Dependencies clean"
+          echo "✅ Lock files committed"
+          echo "✅ Git hygiene good"
+          echo "✅ TypeScript strict"
+          echo "✅ CI/CD configured"
+          echo ""
+          echo "🎯 SAFE TO COMMIT"
+          echo ""
