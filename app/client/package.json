@@ -38,6 +38,8 @@
     "check-types": "yarn tsc --noEmit",
     "init-husky": "cd ../.. && husky install app/client/.husky",
     "clean:workspaces": "yarn workspaces foreach -pAv exec rm -rf node_modules",
+    "fix:critical": "cd ../.. && ./scripts/fix-critical-issues.sh",
+    "pre-flight": "cd ../.. && ./scripts/pre-flight-check.sh",
     "cypress:snapshot": "npx cypress run -b chromium -s",
     "cypress:snapshot:docker": "docker run --network='host' -it --rm -e CYPRESS_$1 -v $PWD:/cypress -w /cypress cypress-snapshot $0",
     "cypress:snapshot:docker:build": "docker build . -f cypress/Dockerfile -t cypress-snapshot"

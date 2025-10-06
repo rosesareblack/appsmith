@@ -45,3 +45,10 @@ mongo-data**
 
 # ignore the task file as it will be different for different project implementations.
 TASKS.md
+
+# Java build artifacts
+**/target/
+app/server/**/target/
+
+# Local gitleaks binary (downloaded by fix-critical-issues.sh)
+scripts/gitleaks
